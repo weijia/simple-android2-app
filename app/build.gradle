@@ -12,24 +12,6 @@ android {
         versionName "1.0"
     }
 
-    // 禁用 allowBackup，避免旧设备不认识此属性
-    applicationVariants.all { variant ->
-        variant.outputs.each { output ->
-            output.processManifest.doLast {
-                def manifestFile = file("${buildDir}/intermediates/merged_manifests/${variant.name}/AndroidManifest.xml")
-                if (manifestFile.exists()) {
-                    def content = manifestFile.getText('UTF-8')
-                    content = content.replaceAll('android:allowBackup="true"', '')
-                    content = content.replaceAll('android:compileSdkVersion="[^"]*"', '')
-                    content = content.replaceAll('android:compileSdkVersionCodename="[^"]*"', '')
-                    content = content.replaceAll('platformBuildVersionCode="[^"]*"', '')
-                    content = content.replaceAll('platformBuildVersionName="[^"]*"', '')
-                    manifestFile.write(content, 'UTF-8')
-                }
-            }
-        }
-    }
-
     buildTypes {
         debug {
             signingConfig null
@@ -41,15 +23,4 @@ android {
     }
 }
 
-// 外部 keystore 签名配置（CI 环境）
-if (System.getenv("KEYSTORE_PATH") != null && System.getenv("KEYSTORE_PASSWORD") != null) {
-    android.signingConfigs {
-        release {
-            storeFile file(System.getenv("KEYSTORE_PATH"))
-            storePassword System.getenv("KEYSTORE_PASSWORD")
-            keyAlias System.getenv("KEY_ALIAS") ?: "release"
-            keyPassword System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
-        }
-    }
-    android.buildTypes.release.signingConfig android.signingConfigs.release
-}
+

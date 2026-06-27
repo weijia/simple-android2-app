@@ -61,29 +61,22 @@ jobs:
 
     # ========== 构建未签名 APK ==========
     - name: Build unsigned APK
-      env:
-        KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-        KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-        KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
       run: |
-        if [ -n "$KEYSTORE_BASE64" ]; then
-          echo "Building Release APK with keystore..."
-          echo "$KEYSTORE_BASE64" | base64 -d > app/release-key.jks
-          export KEYSTORE_PATH=release-key.jks
-          gradle assembleRelease
-          echo "APK_TYPE=release" >> $GITHUB_ENV
-          echo "UNSIGNED_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> $GITHUB_ENV
-        else
-          echo "Building Debug APK..."
-          gradle assembleDebug
-          echo "APK_TYPE=debug" >> $GITHUB_ENV
-          echo "UNSIGNED_APK=app/build/outputs/apk/debug/app-debug-unsigned.apk" >> $GITHUB_ENV
+        gradle assembleRelease
+        echo "APK_TYPE=release" >> $GITHUB_ENV
+        echo "UNSIGNED_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> $GITHUB_ENV
+
+    # ========== 签名：使用 jarsigner + SHA1，兼容 Android 2.1 等旧设备 ==========
+    - name: Sign APK with jarsigner
+      run: |
+        # 允许 JDK 11 使用 SHA-1（旧设备只支持 SHA-1 的 JAR 签名）
+        SECURITY_FILE="$JAVA_HOME/conf/security/java.security"
+        if [ -f "$SECURITY_FILE" ]; then
+          cp "$SECURITY_FILE" "$SECURITY_FILE.bak"
+          sed -i 's/jdk.certpath.disabledAlgorithms=.*/jdk.certpath.disabledAlgorithms=/' "$SECURITY_FILE"
+          sed -i 's/jdk.jar.disabledAlgorithms=.*/jdk.jar.disabledAlgorithms=/' "$SECURITY_FILE"
         fi
 
-    # ========== 签名：apksigner 同时生成 V1+V2，签名文件不压缩，证书日期兼容旧设备 ==========
-    - name: Sign APK with apksigner
-      run: |
         # 创建兼容 keystore：有效期从 2000 年开始，避免旧设备时间验证失败
         keytool -genkeypair \
           -keystore /tmp/compat.keystore \
@@ -101,16 +94,27 @@ jobs:
         echo "Output APK: $OUT"
         mkdir -p app/build/outputs/apk/${{ env.APK_TYPE }}
 
-        # apksigner 默认同时生成 V1(SHA-256) + V2(SHA-256)，签名文件不压缩
-        $ANDROID_HOME/build-tools/28.0.3/apksigner sign \
-          --ks /tmp/compat.keystore \
-          --ks-pass pass:compatpass \
-          --key-pass pass:compatpass \
-          --out "$OUT" \
-          "$UNSIGNED"
+        # 使用 jarsigner 进行 V1 签名，强制 SHA-1 算法
+        jarsigner \
+          -keystore /tmp/compat.keystore \
+          -storepass compatpass \
+          -keypass compatpass \
+          -digestalg SHA1 \
+          -sigalg SHA1withRSA \
+          -signedjar "$OUT" \
+          "$UNSIGNED" \
+          compat
 
         # 验证签名
-        $ANDROID_HOME/build-tools/28.0.3/apksigner verify --verbose "$OUT"
+        jarsigner -verify -verbose -certs "$OUT"
+
+        # 检查并修复 zipalign（jarsigner 签名后可能破坏对齐）
+        $ANDROID_HOME/build-tools/28.0.3/zipalign -c -v 4 "$OUT" || {
+          echo "Re-aligning APK..."
+          mv "$OUT" "$OUT.unaligned"
+          $ANDROID_HOME/build-tools/28.0.3/zipalign -f -p 4 "$OUT.unaligned" "$OUT"
+          rm "$OUT.unaligned"
+        }
         echo "Signed APK successfully"
 
     # ========== SFTP 上传 ==========
