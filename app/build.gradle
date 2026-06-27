@@ -12,21 +12,18 @@ android {
         versionName "1.0"
     }
 
-    signingConfigs {
-        debug {
-            v1SigningEnabled true
-            v2SigningEnabled false
-        }
-    }
-
     buildTypes {
+        debug {
+            signingConfig null
+        }
         release {
             minifyEnabled false
+            signingConfig null
         }
     }
 }
 
-// 签名配置 - 在 android 块之后定义
+// 外部 keystore 签名配置（CI 环境）
 if (System.getenv("KEYSTORE_PATH") != null && System.getenv("KEYSTORE_PASSWORD") != null) {
     android.signingConfigs {
         release {
@@ -34,8 +31,6 @@ if (System.getenv("KEYSTORE_PATH") != null && System.getenv("KEYSTORE_PASSWORD")
             storePassword System.getenv("KEYSTORE_PASSWORD")
             keyAlias System.getenv("KEY_ALIAS") ?: "release"
             keyPassword System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
-            v1SigningEnabled true
-            v2SigningEnabled false
         }
     }
     android.buildTypes.release.signingConfig android.signingConfigs.release
