@@ -59,8 +59,8 @@ jobs:
         echo "apk_name=simple-android2-app-v${VERSION_NAME}-build${BUILD_NUMBER}.apk" >> $GITHUB_OUTPUT
         echo "Version: ${VERSION_NAME}, Build: ${BUILD_NUMBER}"
 
-    # ========== 签名 + 构建 ==========
-    - name: Setup Release Keystore and Build
+    # ========== 构建 ==========
+    - name: Build APK
       env:
         KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -74,10 +74,63 @@ jobs:
           gradle assembleRelease
           echo "APK_TYPE=release" >> $GITHUB_ENV
         else
-          echo "Building Debug APK (no keystore secrets configured)..."
+          echo "Building Debug APK..."
           gradle assembleDebug
           echo "APK_TYPE=debug" >> $GITHUB_ENV
         fi
+
+    # ========== 重新签名：解决签名文件压缩 + 证书日期问题 ==========
+    - name: Resign APK for old device compatibility
+      run: |
+        # 创建兼容 keystore：有效期从 2000 年开始，避免旧设备时间验证失败
+        keytool -genkeypair \
+          -keystore /tmp/compat.keystore \
+          -alias compat \
+          -storepass compatpass \
+          -keypass compatpass \
+          -keyalg RSA -keysize 2048 \
+          -validity 30000 \
+          -dname "CN=CompatApp, OU=Dev, O=Org, C=CN" \
+          -startdate "2000/01/01"
+
+        # 定位 APK
+        if [ -f "app/build/outputs/apk/release/app-release.apk" ]; then
+          APK="app/build/outputs/apk/release/app-release.apk"
+        else
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+        fi
+
+        echo "Original APK: $APK"
+
+        # 用 jarsigner 重新 V1 签名（SHA-1，签名文件不压缩）
+        jarsigner \
+          -keystore /tmp/compat.keystore \
+          -storepass compatpass \
+          -keypass compatpass \
+          -digestalg SHA1 \
+          -sigalg SHA1withRSA \
+          -signedjar /tmp/resigned-v1.apk \
+          "$APK" compat
+
+        # 验证 V1 签名
+        jarsigner -verify -verbose /tmp/resigned-v1.apk
+
+        # 用 apksigner 添加 V2 签名（SHA-256，供现代设备使用）
+        # 保留现有 V1 签名，只添加 V2
+        $ANDROID_HOME/build-tools/28.0.3/apksigner sign \
+          --ks /tmp/compat.keystore \
+          --ks-pass pass:compatpass \
+          --key-pass pass:compatpass \
+          --v1-signing-enabled false \
+          --v2-signing-enabled true \
+          /tmp/resigned-v1.apk
+
+        # 验证最终签名
+        $ANDROID_HOME/build-tools/28.0.3/apksigner verify --verbose /tmp/resigned-v1.apk
+
+        # 替换原始 APK
+        cp /tmp/resigned-v1.apk "$APK"
+        echo "Resigned APK successfully"
 
     # ========== 重命名 APK ==========
     - name: Rename APK with version
