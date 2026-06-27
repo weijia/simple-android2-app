@@ -33,6 +33,12 @@ jobs:
       with:
         packages: 'platforms;android-28 build-tools;28.0.3'
 
+    - name: Set up JDK 11 for build
+      uses: actions/setup-java@v4
+      with:
+        java-version: '11'
+        distribution: 'temurin'
+
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v3
       with:
