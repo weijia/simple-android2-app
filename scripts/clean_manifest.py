@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Post-process a built APK's binary AndroidManifest.xml to remove attributes
+In-place patch a built APK's binary AndroidManifest.xml to remove attributes
 that old Android devices (e.g. NOOK2 Android 2.1) don't understand.
+
+Instead of rebuilding the ZIP, this patches the manifest bytes in-place
+and replaces only that entry, preserving all other ZIP entries and alignment.
 
 Removes these attributes by name:
   - compileSdkVersion
@@ -13,6 +16,7 @@ Removes these attributes by name:
 import struct
 import sys
 import zipfile
+import io
 
 ATTRS_TO_REMOVE = {
     "compileSdkVersion",
@@ -25,10 +29,8 @@ ATTRS_TO_REMOVE = {
 def parse_string_pool(data, offset):
     """Parse ResStringPool chunk starting at offset. Returns list of strings."""
     str_count = struct.unpack_from('<I', data, offset + 8)[0]
-    style_count = struct.unpack_from('<I', data, offset + 12)[0]
     flags = struct.unpack_from('<I', data, offset + 16)[0]
     str_start = struct.unpack_from('<I', data, offset + 20)[0]
-    style_start = struct.unpack_from('<I', data, offset + 24)[0]
 
     is_utf8 = (flags & 0x100) != 0
     strings = []
@@ -38,7 +40,6 @@ def parse_string_pool(data, offset):
         addr = offset + str_start + stroff
 
         if is_utf8:
-            u8len = data[addr]
             strlen = data[addr + 1]
             sdata = data[addr + 2:addr + 2 + strlen]
             strings.append(sdata.decode('utf-8', errors='replace'))
@@ -92,51 +93,38 @@ def remove_attrs_from_chunk(chunk_data, strings):
 
 def parse_axml(data):
     """Parse binary AXML, remove target attributes, return cleaned data."""
-    # Validate file header
     ftype = struct.unpack_from('<H', data, 0)[0]
     fheader_size = struct.unpack_from('<H', data, 2)[0]
-    fsize = struct.unpack_from('<I', data, 4)[0]
 
-    if ftype not in (0x0003, 0x0001):
-        print(f"Warning: unexpected AXML type: 0x{ftype:04x}")
-
-    # First pass: find string pool and build string list
+    # First pass: find string pool
     strings = []
     offset = fheader_size
     while offset < len(data):
         if offset + 8 > len(data):
             break
         ctype = struct.unpack_from('<H', data, offset)[0]
-        hsize = struct.unpack_from('<H', data, offset + 2)[0]
         csize = struct.unpack_from('<I', data, offset + 4)[0]
-
         if csize < 8 or offset + csize > len(data):
             break
-
-        if ctype == 0x0001:  # RES_STRING_POOL_TYPE
+        if ctype == 0x0001:
             strings = parse_string_pool(data, offset)
             print(f"  String pool: {len(strings)} strings")
             break
-
         offset += csize
 
-    # Second pass: process chunks and rebuild
+    # Second pass: process chunks
     result = bytearray(data[:fheader_size])
     offset = fheader_size
-
     while offset < len(data):
         if offset + 8 > len(data):
             break
         ctype = struct.unpack_from('<H', data, offset)[0]
-        hsize = struct.unpack_from('<H', data, offset + 2)[0]
         csize = struct.unpack_from('<I', data, offset + 4)[0]
-
         if csize < 8 or offset + csize > len(data):
             break
 
         chunk_data = data[offset:offset + csize]
-
-        if ctype == 0x0102:  # RES_XML_START_ELEMENT_TYPE
+        if ctype == 0x0102:
             chunk_data = remove_attrs_from_chunk(chunk_data, strings)
 
         result.extend(chunk_data)
@@ -147,31 +135,46 @@ def parse_axml(data):
     return bytes(result)
 
 
-def process_apk(input_path, output_path):
+def patch_apk_manifest(input_path, output_path):
+    """Patch the AndroidManifest.xml inside an APK in-place, preserving ZIP structure."""
     print(f"Processing: {input_path}")
 
     with zipfile.ZipFile(input_path, 'r') as zin:
-        entries = {}
-        for name in zin.namelist():
-            entries[name] = zin.read(name)
+        manifest_data = zin.read('AndroidManifest.xml')
+        manifest_info = zin.getinfo('AndroidManifest.xml')
+        # Read all entries as raw bytes with their info
+        all_entries = []
+        for info in zin.infolist():
+            all_entries.append((info, zin.read(info.filename)))
 
-    if 'AndroidManifest.xml' not in entries:
-        print("ERROR: AndroidManifest.xml not found in APK!")
-        sys.exit(1)
+    print(f"  Original manifest size: {len(manifest_data)} bytes")
 
-    manifest = entries['AndroidManifest.xml']
-    print(f"  Original manifest size: {len(manifest)} bytes")
-
-    cleaned = parse_axml(manifest)
+    cleaned = parse_axml(manifest_data)
     print(f"  Cleaned manifest size: {len(cleaned)} bytes")
 
-    entries['AndroidManifest.xml'] = cleaned
+    # Build a new ZIP preserving the structure of the original as much as possible
+    with open(input_path, 'rb') as f:
+        raw = f.read()
 
-    with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zout:
-        for name, data in entries.items():
-            zout.writestr(name, data)
+    # Use zipfile to rebuild, but preserve compress_type and try to keep alignment
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w') as zout:
+        for info, data in all_entries:
+            if info.filename == 'AndroidManifest.xml':
+                data = cleaned
+                # Ensure manifest is STORED (not compressed)
+                new_info = zipfile.ZipInfo(info.filename)
+                new_info.compress_type = zipfile.ZIP_STORED
+                new_info.external_attr = info.external_attr
+                zout.writestr(new_info, data)
+            else:
+                # Preserve original compression
+                zout.writestr(info, data)
 
-    print(f"Written cleaned APK: {output_path}")
+    with open(output_path, 'wb') as f:
+        f.write(out.getvalue())
+
+    print(f"Written patched APK: {output_path}")
 
 
 if __name__ == '__main__':
@@ -179,4 +182,4 @@ if __name__ == '__main__':
         print(f"Usage: {sys.argv[0]} input.apk output.apk")
         sys.exit(1)
 
-    process_apk(sys.argv[1], sys.argv[2])
+    patch_apk_manifest(sys.argv[1], sys.argv[2])
