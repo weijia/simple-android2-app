@@ -44,13 +44,9 @@ jobs:
         echo "UNSIGNED_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> $GITHUB_ENV
         echo "APK_NAME=simple-android2-app-build${{ github.run_number }}.apk" >> $GITHUB_ENV
 
-    - name: Zipalign unsigned APK
-      run: |
-        $ANDROID_HOME/build-tools/28.0.3/zipalign -f -p 4 "${{ env.UNSIGNED_APK }}" /tmp/aligned-unsigned.apk
-
     - name: Clean manifest attributes for old device compatibility
       run: |
-        python3 scripts/clean_manifest.py /tmp/aligned-unsigned.apk /tmp/cleaned-unsigned.apk
+        python3 scripts/clean_manifest.py "${{ env.UNSIGNED_APK }}" /tmp/cleaned-unsigned.apk
 
     - name: Sign APK with jarsigner
       run: |
