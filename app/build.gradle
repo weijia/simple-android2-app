@@ -13,15 +13,16 @@ android {
         versionName "1.0"
     }
 
-    buildTypes {
+    signingConfigs {
         debug {
             v1SigningEnabled true
             v2SigningEnabled false
         }
+    }
+
+    buildTypes {
         release {
             minifyEnabled false
-            v1SigningEnabled true
-            v2SigningEnabled false
         }
     }
 }
@@ -34,6 +35,8 @@ if (System.getenv("KEYSTORE_PATH") != null && System.getenv("KEYSTORE_PASSWORD")
             storePassword System.getenv("KEYSTORE_PASSWORD")
             keyAlias System.getenv("KEY_ALIAS") ?: "release"
             keyPassword System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
+            v1SigningEnabled true
+            v2SigningEnabled false
         }
     }
     android.buildTypes.release.signingConfig android.signingConfigs.release
