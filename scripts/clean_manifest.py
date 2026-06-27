@@ -3,94 +3,151 @@
 Post-process a built APK's binary AndroidManifest.xml to remove attributes
 that old Android devices (e.g. NOOK2 Android 2.1) don't understand.
 
-Removes these attributes by their resource ID:
-  - compileSdkVersion (0x01010572)
-  - compileSdkVersionCodename (0x01010573)
-  - platformBuildVersionCode (0x01010481)
-  - platformBuildVersionName (0x01010480)
-
-Usage: python3 clean_manifest.py input.apk output.apk
+Removes these attributes by name:
+  - compileSdkVersion
+  - compileSdkVersionCodename
+  - platformBuildVersionCode
+  - platformBuildVersionName
 """
 
 import struct
 import sys
 import zipfile
-import io
-import os
 
-# Android resource IDs to remove
 ATTRS_TO_REMOVE = {
-    0x01010572,  # compileSdkVersion
-    0x01010573,  # compileSdkVersionCodename
-    0x01010481,  # platformBuildVersionCode
-    0x01010480,  # platformBuildVersionName
+    "compileSdkVersion",
+    "compileSdkVersionCodename",
+    "platformBuildVersionCode",
+    "platformBuildVersionName",
 }
 
-def read_int(data, offset):
-    return struct.unpack_from('<I', data, offset)[0]
 
-def write_int(val):
-    return struct.pack('<I', val)
+def parse_string_pool(data, offset):
+    """Parse ResStringPool chunk starting at offset. Returns list of strings."""
+    str_count = struct.unpack_from('<I', data, offset + 8)[0]
+    style_count = struct.unpack_from('<I', data, offset + 12)[0]
+    flags = struct.unpack_from('<I', data, offset + 16)[0]
+    str_start = struct.unpack_from('<I', data, offset + 20)[0]
+    style_start = struct.unpack_from('<I', data, offset + 24)[0]
+
+    is_utf8 = (flags & 0x100) != 0
+    strings = []
+
+    for s in range(str_count):
+        stroff = struct.unpack_from('<I', data, offset + 28 + s * 4)[0]
+        addr = offset + str_start + stroff
+
+        if is_utf8:
+            u8len = data[addr]
+            strlen = data[addr + 1]
+            sdata = data[addr + 2:addr + 2 + strlen]
+            strings.append(sdata.decode('utf-8', errors='replace'))
+        else:
+            strlen = struct.unpack_from('<H', data, addr)[0] * 2
+            sdata = data[addr + 2:addr + 2 + strlen]
+            strings.append(sdata.decode('utf-16le', errors='replace').rstrip('\x00'))
+
+    return strings
+
+
+def remove_attrs_from_chunk(chunk_data, strings):
+    """Remove target attributes from a StartElement chunk. Returns modified chunk."""
+    data = bytearray(chunk_data)
+    attr_start = struct.unpack_from('<H', data, 24)[0]
+    attr_size = struct.unpack_from('<H', data, 26)[0]
+    attr_count = struct.unpack_from('<H', data, 28)[0]
+
+    if attr_size != 20 or attr_count == 0:
+        return bytes(data)
+
+    new_attrs = bytearray()
+    removed = 0
+
+    for i in range(attr_count):
+        aoff = 16 + attr_start + i * attr_size
+        attr_name_idx = struct.unpack_from('<I', data, aoff + 4)[0]
+
+        if attr_name_idx < len(strings) and strings[attr_name_idx] in ATTRS_TO_REMOVE:
+            removed += 1
+        else:
+            new_attrs.extend(data[aoff:aoff + attr_size])
+
+    if removed == 0:
+        return bytes(data)
+
+    new_count = attr_count - removed
+    struct.pack_into('<H', data, 28, new_count)
+
+    # Rebuild chunk
+    header = data[:16 + attr_start]
+    footer = data[16 + attr_start + attr_count * attr_size:]
+    data = header + new_attrs + footer
+
+    # Update chunk size
+    struct.pack_into('<I', data, 4, len(data))
+
+    print(f"  Removed {removed} attribute(s) from element chunk")
+    return bytes(data)
+
 
 def parse_axml(data):
-    """Parse binary AXML and return cleaned data."""
-    # Validate header
-    magic = read_int(data, 0)
-    if magic not in (0x00080003, 0x00080001):
-        print(f"Warning: unexpected AXML magic: 0x{magic:08x}")
-    file_size = read_int(data, 4)
+    """Parse binary AXML, remove target attributes, return cleaned data."""
+    # Validate file header
+    ftype = struct.unpack_from('<H', data, 0)[0]
+    fheader_size = struct.unpack_from('<H', data, 2)[0]
+    fsize = struct.unpack_from('<I', data, 4)[0]
 
-    chunks = []
-    offset = 0
+    if ftype not in (0x0003, 0x0001):
+        print(f"Warning: unexpected AXML type: 0x{ftype:04x}")
+
+    # First pass: find string pool and build string list
+    strings = []
+    offset = fheader_size
     while offset < len(data):
         if offset + 8 > len(data):
             break
-        chunk_type = read_int(data, offset)
-        chunk_size = read_int(data, offset + 4)
+        ctype = struct.unpack_from('<H', data, offset)[0]
+        hsize = struct.unpack_from('<H', data, offset + 2)[0]
+        csize = struct.unpack_from('<I', data, offset + 4)[0]
 
-        if chunk_size < 8 or offset + chunk_size > len(data):
+        if csize < 8 or offset + csize > len(data):
             break
 
-        chunk_data = bytearray(data[offset:offset + chunk_size])
+        if ctype == 0x0001:  # RES_STRING_POOL_TYPE
+            strings = parse_string_pool(data, offset)
+            print(f"  String pool: {len(strings)} strings")
+            break
 
-        # RES_XML_START_ELEMENT_CHUNK = 0x00010202
-        # RES_XML_END_ELEMENT_CHUNK = 0x00010203
-        if chunk_type == 0x00010202:
-            # Start Element chunk - process attributes
-            if len(chunk_data) >= 28:
-                attr_start = read_int(chunk_data, 20)  # attributeStart
-                attr_size = read_int(chunk_data, 24)  # attributeSize
-                attr_count = read_int(chunk_data, 16)  # attributeCount
+        offset += csize
 
-                if attr_size == 20 and attr_count > 0:  # 5 ints per attribute
-                    new_attrs = bytearray()
-                    removed = 0
-                    for i in range(attr_count):
-                        attr_offset = attr_start + i * attr_size
-                        if attr_offset + attr_size > len(chunk_data):
-                            break
-                        ns = read_int(chunk_data, attr_offset)
-                        name = read_int(chunk_data, attr_offset + 4)
-                        if name in ATTRS_TO_REMOVE and ns == 0:
-                            removed += 1
-                        else:
-                            new_attrs.extend(chunk_data[attr_offset:attr_offset + attr_size])
+    # Second pass: process chunks and rebuild
+    result = bytearray(data[:fheader_size])
+    offset = fheader_size
 
-                    if removed > 0:
-                        new_count = attr_count - removed
-                        struct.pack_into('<I', chunk_data, 16, new_count)
-                        # Rebuild chunk
-                        chunk_data = chunk_data[:attr_start] + new_attrs + chunk_data[attr_start + attr_count * attr_size:]
-                        struct.pack_into('<I', chunk_data, 4, len(chunk_data))
-                        print(f"  Removed {removed} attribute(s) from element chunk")
+    while offset < len(data):
+        if offset + 8 > len(data):
+            break
+        ctype = struct.unpack_from('<H', data, offset)[0]
+        hsize = struct.unpack_from('<H', data, offset + 2)[0]
+        csize = struct.unpack_from('<I', data, offset + 4)[0]
 
-        chunks.append(bytes(chunk_data))
-        offset += chunk_size
+        if csize < 8 or offset + csize > len(data):
+            break
 
-    return b''.join(chunks)
+        chunk_data = data[offset:offset + csize]
+
+        if ctype == 0x0102:  # RES_XML_START_ELEMENT_TYPE
+            chunk_data = remove_attrs_from_chunk(chunk_data, strings)
+
+        result.extend(chunk_data)
+        offset += csize
+
+    # Update file size
+    struct.pack_into('<I', result, 4, len(result))
+    return bytes(result)
+
 
 def process_apk(input_path, output_path):
-    """Read APK, clean manifest, write new APK."""
     print(f"Processing: {input_path}")
 
     with zipfile.ZipFile(input_path, 'r') as zin:
@@ -112,11 +169,10 @@ def process_apk(input_path, output_path):
 
     with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zout:
         for name, data in entries.items():
-            # Keep META-INF entries (signatures will be replaced later)
-            # Keep everything else as-is
             zout.writestr(name, data)
 
     print(f"Written cleaned APK: {output_path}")
+
 
 if __name__ == '__main__':
     if len(sys.argv) != 3:
