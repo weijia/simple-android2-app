@@ -44,6 +44,10 @@ jobs:
         echo "UNSIGNED_APK=app/build/outputs/apk/release/app-release-unsigned.apk" >> $GITHUB_ENV
         echo "APK_NAME=simple-android2-app-build${{ github.run_number }}.apk" >> $GITHUB_ENV
 
+    - name: Clean manifest attributes for old device compatibility
+      run: |
+        python3 scripts/clean_manifest.py "${{ env.UNSIGNED_APK }}" /tmp/cleaned-unsigned.apk
+
     - name: Sign APK with jarsigner
       run: |
         # 允许 JDK 11 使用 SHA-1
@@ -64,7 +68,6 @@ jobs:
           -dname "CN=Compat, OU=Dev, O=Org, C=CN" \
           -startdate "2000/01/01"
 
-        UNSIGNED="${{ env.UNSIGNED_APK }}"
         OUT="/tmp/${{ env.APK_NAME }}"
 
         jarsigner \
@@ -74,7 +77,7 @@ jobs:
           -digestalg SHA1 \
           -sigalg SHA1withRSA \
           -signedjar "$OUT" \
-          "$UNSIGNED" \
+          /tmp/cleaned-unsigned.apk \
           compat
 
         jarsigner -verify "$OUT"
