@@ -14,8 +14,14 @@ android {
     }
 
     buildTypes {
+        debug {
+            v1SigningEnabled true
+            v2SigningEnabled false
+        }
         release {
             minifyEnabled false
+            v1SigningEnabled true
+            v2SigningEnabled false
         }
     }
 }
