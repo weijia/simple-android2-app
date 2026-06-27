@@ -5,6 +5,8 @@ import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 
 public class MainActivity extends Activity {
     private boolean screenAlwaysOn = false;
@@ -12,24 +14,34 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
 
-        final Button toggleButton = (Button) findViewById(R.id.toggleScreenOn);
-        toggleButton.setText(R.string.screen_off);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(16, 16, 16, 16);
 
-        toggleButton.setOnClickListener(new View.OnClickListener() {
+        TextView text = new TextView(this);
+        text.setText("Simple Android App");
+        text.setTextSize(24);
+        layout.addView(text);
+
+        final Button button = new Button(this);
+        button.setText("Toggle Screen On");
+        button.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (screenAlwaysOn) {
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     screenAlwaysOn = false;
-                    toggleButton.setText(R.string.screen_off);
+                    button.setText("Toggle Screen On");
                 } else {
                     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     screenAlwaysOn = true;
-                    toggleButton.setText(R.string.screen_on);
+                    button.setText("Toggle Screen Off");
                 }
             }
         });
+        layout.addView(button);
+
+        setContentView(layout);
     }
 }

@@ -6,7 +6,7 @@ android {
 
     defaultConfig {
         applicationId "com.example.simpleandroid2"
-        minSdkVersion 5
+        minSdkVersion 3
         targetSdkVersion 7
         versionCode 18
         versionName "1.0"
@@ -18,14 +18,9 @@ android {
     }
 
     buildTypes {
-        debug {
-            signingConfig null
-        }
         release {
             minifyEnabled false
             signingConfig null
         }
     }
 }
-
-
