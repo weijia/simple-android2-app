@@ -2,4 +2,7 @@
 <resources>
     <string name="app_name">Simple Android 2</string>
     <string name="hello_text">Hello Android 2.0!</string>
+    <string name="screen_on_off">开启屏幕常亮</string>
+    <string name="screen_on">关闭屏幕常亮</string>
+    <string name="screen_off">开启屏幕常亮</string>
 </resources>
