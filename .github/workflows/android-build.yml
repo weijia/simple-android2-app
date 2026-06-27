@@ -81,15 +81,10 @@ jobs:
           echo "UNSIGNED_APK=app/build/outputs/apk/debug/app-debug-unsigned.apk" >> $GITHUB_ENV
         fi
 
-    # ========== 签名：解决 Signflinger ZIP 损坏 + 证书日期问题 ==========
-    - name: Sign APK for compatibility
+    # ========== 签名：apksigner 同时生成 V1+V2，签名文件不压缩，证书日期兼容旧设备 ==========
+    - name: Sign APK with apksigner
       run: |
-        # JDK 11 默认禁用 SHA-1，创建自定义安全策略文件允许 SHA-1
-        cat > /tmp/allow-sha1.security << 'EOF'
-        jdk.jar.disabledAlgorithms=MD2, MD5, RSA keySize < 1024, DSA keySize < 1024
-        EOF
-
-        # 创建兼容 keystore：有效期从 2000 年开始
+        # 创建兼容 keystore：有效期从 2000 年开始，避免旧设备时间验证失败
         keytool -genkeypair \
           -keystore /tmp/compat.keystore \
           -alias compat \
@@ -101,36 +96,21 @@ jobs:
           -startdate "2000/01/01"
 
         UNSIGNED="${{ env.UNSIGNED_APK }}"
+        OUT="app/build/outputs/apk/${{ env.APK_TYPE }}/${{ steps.version.outputs.apk_name }}"
         echo "Unsigned APK: $UNSIGNED"
+        echo "Output APK: $OUT"
+        mkdir -p app/build/outputs/apk/${{ env.APK_TYPE }}
 
-        # V1 签名（SHA-1，签名文件不压缩）— 供旧设备使用
-        jarsigner \
-          -J-Djava.security.properties=/tmp/allow-sha1.security \
-          -keystore /tmp/compat.keystore \
-          -storepass compatpass \
-          -keypass compatpass \
-          -digestalg SHA1 \
-          -sigalg SHA1withRSA \
-          -signedjar /tmp/signed-v1.apk \
-          "$UNSIGNED" compat
-
-        # 验证 V1 签名（使用自定义策略允许 SHA-1）
-        jarsigner \
-          -J-Djava.security.properties=/tmp/allow-sha1.security \
-          -verify -verbose /tmp/signed-v1.apk
-
-        # V2 签名（SHA-256）— 供现代设备使用，保留现有 V1
+        # apksigner 默认同时生成 V1(SHA-256) + V2(SHA-256)，签名文件不压缩
         $ANDROID_HOME/build-tools/28.0.3/apksigner sign \
           --ks /tmp/compat.keystore \
           --ks-pass pass:compatpass \
           --key-pass pass:compatpass \
-          --v1-signing-enabled false \
-          --v2-signing-enabled true \
-          /tmp/signed-v1.apk || echo "apksigner V2 sign skipped or failed"
+          --out "$OUT" \
+          "$UNSIGNED"
 
-        # 复制到构建输出目录
-        mkdir -p app/build/outputs/apk/${{ env.APK_TYPE }}
-        cp /tmp/signed-v1.apk app/build/outputs/apk/${{ env.APK_TYPE }}/${{ steps.version.outputs.apk_name }}
+        # 验证签名
+        $ANDROID_HOME/build-tools/28.0.3/apksigner verify --verbose "$OUT"
         echo "Signed APK successfully"
 
     # ========== SFTP 上传 ==========
